@@ -1,1 +1,86 @@
+import cv2
+import numpy as np
+import tensorflow as tf
+
+# ==== Config ====
+MODEL_PATH = r"C:\Users\ADMIN\Downloads\best_float16.tflite"
+LABELS = ["olaf"]  # Chỉ 1 class
+CONF_THRESH = 0.5
+IOU_THRESH = 0.45
+
+# ==== Load TFLite model ====
+interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+input_height = input_details[0]['shape'][1]
+input_width = input_details[0]['shape'][2]
+print(f"[INFO] Input size: {input_width}x{input_height}")
+
+def non_max_suppression(boxes, scores, iou_threshold):
+    idxs = cv2.dnn.NMSBoxes(boxes, scores, CONF_THRESH, iou_threshold)
+    if len(idxs) > 0:
+        idxs = idxs.flatten()
+        return idxs
+    return []
+
+cap = cv2.VideoCapture(0)
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    h, w, _ = frame.shape
+
+    # Chuẩn bị ảnh
+    img = cv2.resize(frame, (input_width, input_height))
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img_rgb = np.expand_dims(img_rgb, axis=0).astype(np.float32) / 255.0
+
+    # Chạy mô hình
+    interpreter.set_tensor(input_details[0]['index'], img_rgb)
+    interpreter.invoke()
+    output_data = interpreter.get_tensor(output_details[0]['index'])  # (1, 5, 8400)
+    predictions = np.squeeze(output_data).T  # (8400, 5)
+
+    boxes = []
+    scores = []
+
+    # Lặp qua từng prediction
+    for pred in predictions:
+        x_center, y_center, width, height, conf = pred
+
+        if conf < CONF_THRESH:
+            continue
+
+        # Convert về pixel
+        x_center *= w
+        y_center *= h
+        width *= w
+        height *= h
+
+        x1 = int(x_center - width / 2)
+        y1 = int(y_center - height / 2)
+        boxes.append([x1, y1, int(width), int(height)])
+        scores.append(float(conf))
+
+    # NMS để loại bỏ box trùng
+    idxs = non_max_suppression(boxes, scores, IOU_THRESH)
+
+    for i in idxs:
+        x, y, bw, bh = boxes[i]
+        conf = scores[i]
+        label_text = f"{LABELS[0]} {conf:.2f}"
+        cv2.rectangle(frame, (x, y), (x + bw, y + bh), (0, 255, 0), 2)
+        cv2.putText(frame, label_text, (x, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    cv2.imshow("YOLO TFLite Webcam", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
 
